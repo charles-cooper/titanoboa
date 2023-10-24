@@ -418,7 +418,7 @@ class NetworkEnv(Env):
             # note: signed.rawTransaction has type HexBytes
             tx_bytes_signed = bytes(signed.rawTransaction)
 
-            self._rpc_send_raw_txn(tx_bytes_signed)
+            tx_hash = self._rpc_send_raw_txn(tx_bytes_signed)
 
         else:
             # some providers (i.e. metamask) don't have sign_transaction
