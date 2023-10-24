@@ -100,6 +100,8 @@ class NetworkEnv(Env):
 
         self.tx_settings = TransactionSettings()
 
+        self._use_private_rpc = False
+
     @cached_property
     def _rpc_has_snapshot(self):
         try:
@@ -360,6 +362,29 @@ class NetworkEnv(Env):
         )
         self.vm.state._account_db._rpc._init_mem_db()
 
+    # define whether to use `eth_sendPrivateTransaction`.
+    # note: titanoboa does no checking to see if `eth_sendPrivateTransaction`
+    # is available! if not available, transactions will probably raise
+    # RPCErrors.
+    def set_private_mode(self, use_private_rpc: bool):
+        self._use_private_rpc = use_private_rpc
+
+    @contextlib.contextmanager
+    def private_mode(self, use_private_rpc: bool = True):
+        tmp = self._use_private_rpc
+        try:
+            self._use_private_rpc = use_private_rpc
+            yield
+        finally:
+            self._use_private_rpc = tmp
+
+    def _rpc_send_raw_txn(self, tx_bytes):
+        tx_hex = to_hex(tx_bytes)
+        if self._use_private_rpc:
+            return self._rpc.fetch("eth_sendPrivateTransaction", [{"tx": tx_hex}])
+        else:
+            return self._rpc.fetch("eth_sendRawTransaction", [tx_hex])
+
     def _send_txn(self, from_, to=None, gas=None, value=None, data=None):
         tx_data = _fixup_dict(
             {"from": from_, "to": to, "gas": gas, "value": value, "data": data}
@@ -391,9 +416,10 @@ class NetworkEnv(Env):
             signed = account.sign_transaction(tx_data)
 
             # note: signed.rawTransaction has type HexBytes
-            tx_hash = self._rpc.fetch(
-                "eth_sendRawTransaction", [to_hex(bytes(signed.rawTransaction))]
-            )
+            tx_bytes_signed = bytes(signed.rawTransaction)
+
+            self._rpc_send_raw_txn(tx_bytes_signed)
+
         else:
             # some providers (i.e. metamask) don't have sign_transaction
             # we just have to call send_transaction and pray for the best
