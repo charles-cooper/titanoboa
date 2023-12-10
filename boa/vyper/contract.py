@@ -1141,17 +1141,6 @@ class ABIContractFactory:
             ContractFunctionT.from_abi(i) for i in abi if i.get("type") == "function"
         ]
 
-        # warn on functions with same name
-        _tmp = set()
-        for f in functions:
-            if f.name in _tmp:
-                warnings.warn(
-                    f"{name} overloads {f.name}! overloaded methods "
-                    "might not work correctly at this time",
-                    stacklevel=1,
-                )
-            _tmp.add(f.name)
-
         events = [EventT.from_abi(i) for i in abi if i.get("type") == "event"]
 
         return cls(name, functions, events)
@@ -1174,18 +1163,65 @@ class ABIContractFactory:
 
 
 class ABIFunction(VyperFunction):
-    def __init__(self, func_t, contract):
+    def __init__(self, funcs, contract):
         self.contract = contract
         self.env = contract.env
-        self._func_t = func_t
+        self._funcs = funcs
 
     def __repr__(self):
-        return f"{self.contract._name}.{self._func_t.name}"
+        return f"{self.contract._name}.{self._func_t[0].name}"
 
-    # OVERRIDE
-    @property
-    def func_t(self):
-        return self._func_t
+    def prepare_calldata(self, *args, **kwargs):
+        n_min_args = self.n_min_args
+        n_max_args = self.n_max_args
+
+        if not n_min_args <= len(args) <= n_max_args:
+            expectation_str = f"expected between {n_min_args} and {n_max_args}"
+            if n_min_args == n_max_args:
+                expectation_str = f"expected {n_max_args}"
+            raise Exception(
+                f"bad args to `{repr(self.func_t)}` "
+                f"({expectation_str}, got {len(args)})"
+            )
+
+        # align the kwargs with the signature
+        # sig_kwargs = self.func_t.default_args[: len(kwargs)]
+
+        total_non_base_args = len(kwargs) + len(args) - n_pos_args
+
+        args = [getattr(arg, "address", arg) for arg in args]
+
+        method_id, args_abi_type = self.args_abi_type(total_non_base_args)
+        encoded_args = abi_encode(args_abi_type, args)
+
+        if self.func_t.is_constructor or self.func_t.is_fallback:
+            return encoded_args
+
+        return method_id + encoded_args
+
+    def __call__(self, *args, value=0, gas=None, sender=None, **kwargs):
+        calldata_bytes = self.prepare_calldata(*args, **kwargs)
+
+        override_bytecode = None
+        if hasattr(self, "_override_bytecode"):
+            override_bytecode = self._override_bytecode
+
+        with self.contract._anchor_source_map(self._source_map):
+            computation = self.env.execute_code(
+                to_address=self.contract._address,
+                sender=sender,
+                data=calldata_bytes,
+                value=value,
+                gas=gas,
+                is_modifying=self.func_t.is_mutable,
+                override_bytecode=override_bytecode,
+                ir_executor=ir_executor,
+                contract=self.contract,
+            )
+
+            typ = self.func_t.return_type
+            return self.contract.marshal_to_python(computation, typ)
+
 
     # OVERRIDE
     @cached_property
